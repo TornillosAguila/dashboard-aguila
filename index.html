@@ -1,197 +1,184 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dashboard Ejecutivo — Grupo Águila</title>
-  <link rel="stylesheet" href="./assets/style.css">
-</head>
-<body>
+/* ═══════════════════════════════════════════
+   parser.js — Lee DASH.xlsx (ventas + ope + admon)
+   Expone: window.Dash  { ventas, ope, admon }
+   ═══════════════════════════════════════════ */
+(function () {
 
-<!-- LOADER -->
-<div id="loader">
-  <div class="spinner"></div>
-  <p>Cargando datos…</p>
-</div>
+  const MES_ABREV = {
+    ENERO:'Ene',FEBRERO:'Feb',MARZO:'Mar',ABRIL:'Abr',
+    MAYO:'May',JUNIO:'Jun',JULIO:'Jul',AGOSTO:'Ago',
+    SEPTIEMBRE:'Sep',OCTUBRE:'Oct',NOVIEMBRE:'Nov',DICIEMBRE:'Dic'
+  };
 
-<!-- APP -->
-<div id="app" style="display:none">
+  function parseNum(v) {
+    if (v === null || v === undefined) return 0;
+    if (typeof v === 'number' && isNaN(v)) return 0;
+    try { return parseFloat(String(v).replace(/,/g,'').replace(/\$/g,'').trim()) || 0; }
+    catch { return 0; }
+  }
 
-  <div class="header">
-    <div class="header-left">
-      <h1>📊 Dashboard Ejecutivo — Grupo Águila</h1>
-      <p>Reporte para Consejo Directivo · Grupo Águila</p>
-    </div>
-    <div class="header-right">
-      <div class="badge" id="hdr-periodo">Período: <span>—</span></div>
-      <div class="badge" id="hdr-cortes">Cortes ventas: <span>—</span></div>
-      <div class="badge" id="hdr-canales">Departamentos: <span>—</span></div>
-    </div>
-  </div>
+  function parseNumFirst(v) {
+    try {
+      const s = String(v).replace(/,/g,'').split('/')[0].replace(/[^\d.-]/g,'');
+      return parseFloat(s) || 0;
+    } catch { return 0; }
+  }
 
-  <!-- TABS -->
-  <div class="tabs">
-    <div class="tab active"  onclick="showPage('resumen',this)">🏠 Resumen</div>
-    <div class="tab"         onclick="showPage('canales',this)">📡 Canales</div>
-    <div class="tab"         onclick="showPage('cortes',this)">📅 Cortes</div>
-    <div class="tab"         onclick="showPage('tabla-v',this)">📋 Detalle Ventas</div>
-    <div class="tab sep"     onclick="showPage('ope',this)">⚙️ Operaciones</div>
-    <div class="tab"         onclick="showPage('tabla-o',this)">📋 Detalle Ope.</div>
-    <div class="tab sep"     onclick="showPage('admon',this)">💼 Administración</div>
-    <div class="tab"         onclick="showPage('tabla-a',this)">📋 Detalle Admon.</div>
-    <div class="tab sep"     onclick="showPage('consolidado',this)">🔷 Consolidado</div>
-  </div>
+  function dateLabel(mes, raw) {
+    const abr = MES_ABREV[String(mes).trim().toUpperCase()] || String(mes).slice(0,3);
+    if (raw && typeof raw === 'number' && raw > 40000) {
+      const d = XLSX.SSF.parse_date_code(raw);
+      if (d) {
+        const m = ['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][d.m];
+        return m+'/'+String(d.d).padStart(2,'0');
+      }
+    }
+    if (raw && typeof raw === 'number' && raw < 100) return abr+'/'+String(Math.round(raw)).padStart(2,'0');
+    if (raw instanceof Date) {
+      const mm = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][raw.getMonth()];
+      return mm+'/'+String(raw.getDate()).padStart(2,'0');
+    }
+    if (typeof raw === 'string') {
+      const s = raw.replace(/[/\s]/g,'');
+      const m = s.match(/^(\d{1,2})(\d{2})\d{4}$/);
+      if (m) { const mn=['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][+m[2]]; return mn+'/'+m[1].padStart(2,'0'); }
+      return s.slice(0,8);
+    }
+    return abr;
+  }
 
-  <div class="main">
+  function buildCortes(mesRow, fechaRow, s, e) {
+    const cortes = []; let mes = '';
+    for (let c = s; c <= e; c++) {
+      const mv = mesRow[c];
+      if (mv && String(mv).trim() && String(mv).trim() !== 'nan') mes = String(mv).trim().toUpperCase();
+      if (!mes) continue;
+      const fv = fechaRow[c];
+      if (fv === null || fv === undefined || fv === '') continue;
+      cortes.push({ col: c, mes, label: dateLabel(mes, fv) });
+    }
+    return cortes;
+  }
 
-    <!-- ══ VENTAS: RESUMEN ══════════════════════════════════════ -->
-    <div class="page active" id="page-resumen">
-      <div class="kpi-grid" id="kpi-grid-ventas"></div>
-      <div class="charts-row cols-2">
-        <div class="panel">
-          <div class="panel-title">Ventas Totales por Corte</div>
-          <div class="panel-sub">Todos los cortes · línea punteada = meta</div>
-          <canvas id="chartTotalCortes" height="110" role="img" aria-label="Ventas totales por corte de fecha"></canvas>
-        </div>
-        <div class="panel">
-          <div class="panel-title">Ventas por Mes — Último Corte</div>
-          <div class="panel-sub">Comparativo mensual acumulado vs meta</div>
-          <canvas id="chartMeses" height="110" role="img" aria-label="Barras de ventas por mes"></canvas>
-        </div>
-      </div>
-      <div class="charts-row cols-2">
-        <div class="panel">
-          <div class="panel-title">Mix de Canales — Participación %</div>
-          <div class="panel-sub">Promedio de todos los cortes por canal</div>
-          <div style="display:flex;justify-content:center;max-height:260px">
-            <canvas id="chartDona" style="max-width:300px" role="img" aria-label="Dona de participación por canal"></canvas>
-          </div>
-        </div>
-        <div class="panel">
-          <div class="panel-title">Cumplimiento % por Canal</div>
-          <div class="panel-sub">🟢 ≥100% &nbsp;🟡 85–99% &nbsp;🔴 &lt;85%</div>
-          <canvas id="chartCumplimiento" height="120" role="img" aria-label="Barras de cumplimiento por canal"></canvas>
-        </div>
-      </div>
-    </div>
+  function sheetToArr(wb, name) {
+    const ws = wb.Sheets[name];
+    if (!ws) throw new Error('Hoja "'+name+'" no encontrada en el Excel.');
+    return XLSX.utils.sheet_to_json(ws, { header:1, defval:null, raw:true });
+  }
 
-    <!-- ══ VENTAS: CANALES ══════════════════════════════════════ -->
-    <div class="page" id="page-canales">
-      <div class="filter-row" id="month-filter-row"></div>
-      <div class="charts-row cols-2e">
-        <div class="panel"><div class="panel-title">Punto de Venta</div><div class="panel-sub">Ventas netas por corte vs meta</div><canvas id="chartPV" height="110" role="img" aria-label="Punto de venta"></canvas></div>
-        <div class="panel"><div class="panel-title">Call Center</div><div class="panel-sub">Ventas netas por corte vs meta</div><canvas id="chartCC" height="110" role="img" aria-label="Call center"></canvas></div>
-      </div>
-      <div class="charts-row cols-2e">
-        <div class="panel"><div class="panel-title">Plataforma</div><div class="panel-sub">Ventas netas por corte vs meta</div><canvas id="chartPLAT" height="110" role="img" aria-label="Plataforma"></canvas></div>
-        <div class="panel"><div class="panel-title">Asesores</div><div class="panel-sub">Ventas netas por corte vs meta</div><canvas id="chartASE" height="110" role="img" aria-label="Asesores"></canvas></div>
-      </div>
-    </div>
+  function parseVentas(wb) {
+    const raw    = sheetToArr(wb, 'ventas');
+    const cortes = buildCortes(raw[2], raw[3], 2, 20);
+    const meses  = [...new Set(cortes.map(c => c.mes))];
+    const CROW   = {'PUNTO DE VENTA':4,'CALL CENTER':7,'PLATAFORMA':10,'ASESORES':13,'VENTAS TOTALES':16};
+    const PROW   = {'PEDIDOS PV':6,'PEDIDOS CC':9,'PEDIDOS PLAT':12,'PEDIDOS ASESORES':15,'PEDIDOS TOTALES':18};
+    const data = {}, metas = {}, pedidos = {};
+    Object.entries(CROW).forEach(([k,r]) => {
+      metas[k] = parseNum(raw[r]?.[1]);
+      data[k]  = cortes.map(c => parseNum(raw[r]?.[c.col]));
+    });
+    Object.entries(PROW).forEach(([k,r]) => {
+      pedidos[k] = cortes.map(c => { const n = parseNumFirst(raw[r]?.[c.col]); return isNaN(n)?null:n; });
+    });
+    const acumuladoMes = {};
+    meses.forEach(mes => {
+      const idx = cortes.map((c,i)=>c.mes===mes?i:-1).filter(i=>i>=0);
+      const last = idx[idx.length-1];
+      acumuladoMes[mes] = {};
+      Object.keys(data).forEach(k => { acumuladoMes[mes][k] = data[k][last]||0; });
+    });
+    return { cortes, meses, data, metas, pedidos, acumuladoMes,
+      canalesVenta: ['PUNTO DE VENTA','CALL CENTER','PLATAFORMA','ASESORES'],
+      canalConfig: {
+        'PUNTO DE VENTA':{ color:'#4f8ef7', cls:'blue',   icon:'🏪' },
+        'CALL CENTER':   { color:'#22c55e', cls:'green',  icon:'📞' },
+        'PLATAFORMA':    { color:'#f59e0b', cls:'amber',  icon:'💻' },
+        'ASESORES':      { color:'#a78bfa', cls:'purple', icon:'👥' },
+        'VENTAS TOTALES':{ color:'#f87171', cls:'red',    icon:'💰' },
+      },
+    };
+  }
 
-    <!-- ══ VENTAS: CORTES ═══════════════════════════════════════ -->
-    <div class="page" id="page-cortes">
-      <div id="mes-charts-container"></div>
-    </div>
+  function parseOpe(wb) {
+    const raw    = sheetToArr(wb, 'ope');
+    const cortes = buildCortes(raw[0], raw[1], 2, 18);
+    const meses  = [...new Set(cortes.map(c => c.mes))];
+    const INDS = [
+      {key:'COMPRA',         row:2, label:'Compras ($)',            tipo:'$',   metaOp:'>=', color:'#4f8ef7'},
+      {key:'DEVOLUCIONES',   row:3, label:'Devoluciones',          tipo:'num', metaOp:'<',  color:'#22c55e'},
+      {key:'NIVEL_SERVICIO', row:6, label:'Nivel de Servicio ($)', tipo:'$',   metaOp:'>=', color:'#f59e0b'},
+      {key:'MAQUINAS',       row:7, label:'Máquinas Reparadas',    tipo:'num', metaOp:'>=', color:'#a78bfa'},
+      {key:'DIAS_REPARACION',row:8, label:'Días Prom. Reparación', tipo:'num', metaOp:'<=', color:'#f87171'},
+    ];
+    const data = {}, metas = {};
+    INDS.forEach(ind => {
+      metas[ind.key] = parseNumFirst(raw[ind.row]?.[1]);
+      data[ind.key]  = cortes.map(c => {
+        const v = raw[ind.row]?.[c.col];
+        if (v===null||v===undefined||v==='') return null;
+        const n = parseNumFirst(v); return isNaN(n)?null:n;
+      });
+    });
+    data['NIVEL_SERVICIO_PCT'] = cortes.map(c => {
+      try { const p = String(raw[6]?.[c.col]).replace(/\$/g,'').replace(/%/g,'').split('/'); return p.length>1?parseFloat(p[1]):null; }
+      catch { return null; }
+    });
+    return { cortes, meses, data, metas, indicadores: INDS };
+  }
 
-    <!-- ══ VENTAS: TABLA ════════════════════════════════════════ -->
-    <div class="page" id="page-tabla-v">
-      <div class="panel">
-        <div class="panel-title">Detalle de Ventas — Todos los Cortes por Canal</div>
-        <div class="panel-sub">Valores en pesos MXN · promedio y semáforo vs meta</div>
-        <div class="table-wrap" id="tabla-ventas"></div>
-      </div>
-    </div>
+  function parseAdmon(wb) {
+    const raw    = sheetToArr(wb, 'admon');
+    const cortes = buildCortes(raw[3], raw[4], 3, 13);
+    const meses  = [...new Set(cortes.map(c => c.mes))];
+    const INDS = [
+      {key:'INGRESOS',        row:5,  label:'Ingresos ($)',          tipo:'$',    metaOp:'>=', color:'#4f8ef7'},
+      {key:'PLAZO_COBRO',     row:6,  label:'Plazo de Cobro (días)', tipo:'dias', metaOp:'<',  color:'#22c55e'},
+      {key:'RECUPERACION',    row:7,  label:'% Recuperación',        tipo:'pct',  metaOp:'<',  color:'#f59e0b'},
+      {key:'EGRESOS',         row:8,  label:'Egresos ($)',            tipo:'$',    metaOp:'<=', color:'#a78bfa'},
+      {key:'GASTOS_OPERACION',row:9,  label:'Gastos Operación ($)',   tipo:'$',    metaOp:'<=', color:'#f87171'},
+      {key:'FLUJO',           row:10, label:'Flujo de Efectivo',      tipo:'$',    metaOp:'>0', color:'#22d3ee'},
+    ];
+    const data = {}, metas = {};
+    INDS.forEach(ind => {
+      try { metas[ind.key] = parseFloat(String(raw[ind.row]?.[2]).replace(/[$,<>]/g,'').trim())||0; }
+      catch { metas[ind.key] = 0; }
+      data[ind.key] = cortes.map(c => {
+        const v = raw[ind.row]?.[c.col];
+        if (v===null||v===undefined) return null;
+        const n = parseNum(v); return isNaN(n)?null:n;
+      });
+    });
+    return { cortes, meses, data, metas, indicadores: INDS };
+  }
 
-    <!-- ══ OPERACIONES ══════════════════════════════════════════ -->
-    <div class="page" id="page-ope">
-      <div class="kpi-grid" id="kpi-grid-ope" style="grid-template-columns:repeat(4,1fr)"></div>
-      <div class="charts-row cols-2e">
-        <div class="panel"><div class="panel-title">Compras por Corte</div><div class="panel-sub">Valor de compras vs meta $2.16M</div><canvas id="chartCompras" height="110" role="img" aria-label="Compras por corte"></canvas></div>
-        <div class="panel"><div class="panel-title">Devoluciones por Corte</div><div class="panel-sub">Verde &lt; meta 27 · Rojo ≥ 27</div><canvas id="chartDevoluciones" height="110" role="img" aria-label="Devoluciones por corte"></canvas></div>
-      </div>
-      <div class="charts-row cols-2e">
-        <div class="panel"><div class="panel-title">Nivel de Servicio ($)</div><div class="panel-sub">Valor absoluto por corte</div><canvas id="chartNivelServicio" height="110" role="img" aria-label="Nivel de servicio"></canvas></div>
-        <div class="panel"><div class="panel-title">Nivel de Servicio (%)</div><div class="panel-sub">Porcentaje por corte · meta 8.8%</div><canvas id="chartNivelPct" height="110" role="img" aria-label="Porcentaje nivel de servicio"></canvas></div>
-      </div>
-      <div class="charts-row cols-2e">
-        <div class="panel"><div class="panel-title">Máquinas Reparadas</div><div class="panel-sub">Unidades por corte · meta 24</div><canvas id="chartMaquinas" height="110" role="img" aria-label="Máquinas reparadas"></canvas></div>
-        <div class="panel"><div class="panel-title">Días Promedio de Reparación</div><div class="panel-sub">Verde ≤ meta 3 días · Rojo &gt; 3</div><canvas id="chartDias" height="110" role="img" aria-label="Días de reparación"></canvas></div>
-      </div>
-    </div>
+  async function loadDash() {
+    const loader  = document.getElementById('loader');
+    const loaderP = loader.querySelector('p');
+    try {
+      loaderP.textContent = 'Cargando archivo Excel…';
+      const resp = await fetch('./data/DASH.xlsx');
+      if (!resp.ok) throw new Error('No se pudo cargar data/DASH.xlsx (HTTP '+resp.status+')');
+      loaderP.textContent = 'Procesando hojas…';
+      const buf = await resp.arrayBuffer();
+      const wb  = XLSX.read(buf, { type:'array', cellDates:false, raw:true });
+      window.Dash = {
+        ventas: parseVentas(wb),
+        ope:    parseOpe(wb),
+        admon:  parseAdmon(wb),
+      };
+      await new Promise(r => setTimeout(r, 200));
+      loader.style.display = 'none';
+      document.getElementById('app').style.display = 'block';
+      document.dispatchEvent(new Event('dashready'));
+    } catch (err) {
+      loaderP.textContent = '';
+      const d = document.createElement('div');
+      d.className = 'err';
+      d.innerHTML = '<strong>⚠️ Error al cargar el Excel</strong><br><br>'+err.message+'<br><br><em>Usa un servidor web (GitHub Pages, python -m http.server 8080, o Live Server en VS Code). Firefox bloquea archivos locales — usa Chrome o Edge.</em>';
+      loader.appendChild(d);
+    }
+  }
 
-    <!-- ══ OPERACIONES: TABLA ════════════════════════════════════ -->
-    <div class="page" id="page-tabla-o">
-      <div class="panel">
-        <div class="panel-title">Detalle de Operaciones — Todos los Cortes</div>
-        <div class="panel-sub">Indicadores operativos por corte de fecha</div>
-        <div class="table-wrap" id="tabla-ope"></div>
-      </div>
-    </div>
-
-    <!-- ══ ADMINISTRACIÓN ═══════════════════════════════════════ -->
-    <div class="page" id="page-admon">
-      <div class="kpi-grid" id="kpi-grid-admon" style="grid-template-columns:repeat(3,1fr)"></div>
-      <div class="charts-row cols-2e">
-        <div class="panel"><div class="panel-title">Ingresos por Corte</div><div class="panel-sub">Abr–Jun · meta $3.54M</div><canvas id="chartIngresos" height="110" role="img" aria-label="Ingresos por corte"></canvas></div>
-        <div class="panel"><div class="panel-title">Ingresos vs Egresos</div><div class="panel-sub">Comparativo por corte</div><canvas id="chartIngEgr" height="110" role="img" aria-label="Ingresos vs egresos"></canvas></div>
-      </div>
-      <div class="charts-row cols-2e">
-        <div class="panel"><div class="panel-title">Flujo de Efectivo</div><div class="panel-sub">Verde = positivo · Rojo = negativo</div><canvas id="chartFlujo" height="110" role="img" aria-label="Flujo de efectivo"></canvas></div>
-        <div class="panel"><div class="panel-title">Gastos de Operación</div><div class="panel-sub">Por corte · meta $555K</div><canvas id="chartGastos" height="110" role="img" aria-label="Gastos de operación"></canvas></div>
-      </div>
-      <div class="charts-row cols-2e">
-        <div class="panel"><div class="panel-title">Plazo de Cobro (días)</div><div class="panel-sub">Verde &lt; meta 35 días</div><canvas id="chartPlazoCobro" height="110" role="img" aria-label="Plazo de cobro"></canvas></div>
-        <div class="panel"><div class="panel-title">% Recuperación</div><div class="panel-sub">Meta &lt;33%</div><canvas id="chartRecuperacion" height="110" role="img" aria-label="Porcentaje de recuperación"></canvas></div>
-      </div>
-    </div>
-
-    <!-- ══ ADMINISTRACIÓN: TABLA ═════════════════════════════════ -->
-    <div class="page" id="page-tabla-a">
-      <div class="panel">
-        <div class="panel-title">Detalle de Administración — Todos los Cortes</div>
-        <div class="panel-sub">KPIs financieros por corte de fecha · Abr–Jun 2026</div>
-        <div class="table-wrap" id="tabla-admon"></div>
-      </div>
-    </div>
-
-    <!-- ══ CONSOLIDADO ══════════════════════════════════════════ -->
-    <div class="page" id="page-consolidado">
-      <div class="charts-row cols-2e">
-        <div class="panel">
-          <div class="panel-title">Ventas vs Compras por Mes</div>
-          <div class="panel-sub">Margen operativo mensual</div>
-          <canvas id="chartConsVtasCmp" height="130" role="img" aria-label="Ventas vs compras por mes"></canvas>
-        </div>
-        <div class="panel">
-          <div class="panel-title">Ingresos vs Egresos Admon</div>
-          <div class="panel-sub">Flujo financiero por mes</div>
-          <canvas id="chartConsIngEgr" height="130" role="img" aria-label="Ingresos vs egresos administración"></canvas>
-        </div>
-      </div>
-      <div class="charts-row cols-2e">
-        <div class="panel">
-          <div class="panel-title">Tendencia Cruzada — 3 Departamentos</div>
-          <div class="panel-sub">Ventas · Compras · Ingresos por mes</div>
-          <canvas id="chartConsTendencia" height="130" role="img" aria-label="Tendencia cruzada de los 3 departamentos"></canvas>
-        </div>
-        <div class="panel">
-          <div class="panel-title">Semáforo de Indicadores</div>
-          <div class="panel-sub">🟢 OK &nbsp; 🟡 Alerta &nbsp; 🔴 Fuera de meta</div>
-          <div id="semaforo-list" style="margin-top:4px"></div>
-        </div>
-      </div>
-    </div>
-
-  </div><!-- /main -->
-</div><!-- /app -->
-
-<!-- LIBS -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<!-- MÓDULOS: parser → ui → charts -->
-<script src="./assets/parser.js"></script>
-<script src="./assets/ui.js"></script>
-<script src="./assets/charts.js"></script>
-
-</body>
-</html>
+  if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', loadDash);
+  else loadDash();
+})();
